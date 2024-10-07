@@ -15,6 +15,9 @@ from .kineto_operator import KinetoOperator
 class ChakraDeviceTraceLoader:
     """Loads Chakra device traces."""
 
+    def __init__(self):
+        self.sorted_kineto_ops = {}
+
     def load(
         self, chakra_device_trace: str
     ) -> Tuple[
@@ -165,16 +168,17 @@ class ChakraDeviceTraceLoader:
             "sorted_kineto_cpu_op_ts": [],
         }
 
-    def get_exclusive_dur_for_op(self, sorted_ops: list[KinetoOperator], enumerate_op: tuple[int, KinetoOperator]) -> int:
+    def get_exclusive_dur_for_op(self, tid_op_index: tuple[int, int]) -> int:
 
-        i = enumerate_op[0]
-        op = enumerate_op[1]
+        i = tid_op_index[1]
+        tid = tid_op_index[0]
+        op = self.sorted_kineto_ops[tid][i]
         # logging.info(f"Op {i}: {op.name}")
         exclusive_dur = op.inclusive_dur
         overlapping_regions = []
 
         # Identify overlapping regions with child operators
-        for child_op in sorted_ops[i + 1:]:
+        for child_op in self.sorted_kineto_ops[tid][i + 1:]:
             if child_op.timestamp >= op.timestamp and (child_op.timestamp + child_op.inclusive_dur) <= (
                     op.timestamp + op.inclusive_dur
             ):
@@ -214,13 +218,14 @@ class ChakraDeviceTraceLoader:
         """
         logging.info("Calculating exclusive durations for Kineto operators in parallel.")
 
-        for ops in  kineto_tid_cpu_ops_map.values():
+        for tid, ops in  kineto_tid_cpu_ops_map.items():
             logging.info(f"Processing {len(ops)} operators in thread.")
-            sorted_ops = sorted(ops, key=lambda op: (op.timestamp, op.inclusive_dur))
+            self.sorted_kineto_ops[tid] = sorted(ops, key=lambda op: (op.timestamp, op.inclusive_dur))
 
-            fn = partial(self.get_exclusive_dur_for_op, sorted_ops)
-            exclusive_durs = process_map(fn, enumerate(sorted_ops), max_workers=16, chunksize=max(len(sorted_ops)//1000, 1), total=len(sorted_ops))
-            for kineto_op, excl_dur in zip(sorted_ops, exclusive_durs):
+            # fn = partial(self.get_exclusive_dur_for_op, sorted_ops)
+            exclusive_durs = process_map(self.get_exclusive_dur_for_op,
+                                         [(tid, i) for i in range(len(self.sorted_kineto_ops[tid]))], chunksize=max(len(self.sorted_kineto_ops[tid])//1000, 1), total=len(self.sorted_kineto_ops[tid]))
+            for kineto_op, excl_dur in zip(self.sorted_kineto_ops[tid], exclusive_durs):
                 kineto_op.exclusive_dur = excl_dur
             # for i, op in tqdm(enumerate(sorted_ops), total=len(sorted_ops)):
             #     exclusive_dur = op.inclusive_dur
