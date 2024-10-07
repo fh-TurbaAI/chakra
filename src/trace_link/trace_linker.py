@@ -12,7 +12,7 @@ from et_replay.execution_trace import (
 from et_replay.execution_trace import Node as PyTorchOperator
 from tqdm import tqdm
 
-from et_replay.utils import read_dictionary_from_json_file
+from et_replay.utils import read_dictionary_from_json_file, write_dictionary_to_json_file
 from .chakra_device_trace_loader import ChakraDeviceTraceLoader
 from .chakra_host_trace_loader import ChakraHostTraceLoader
 from .kineto_operator import KinetoOperator
@@ -789,6 +789,5 @@ class TraceLinker:
                 chakra_execution_trace_plus_data["nodes"], key=lambda x: x["id"]
             )
 
-        with open(output_file, "w") as file:
-            json.dump(chakra_execution_trace_plus_data, file, indent=4)
+        write_dictionary_to_json_file(output_file, chakra_execution_trace_plus_data)
         logging.debug(f"ET+ data dumped to {output_file}.")

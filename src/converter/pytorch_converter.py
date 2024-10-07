@@ -1,3 +1,4 @@
+import gzip
 import json
 import logging
 from typing import IO, Dict, List, Optional, Set, Tuple
@@ -330,7 +331,7 @@ class PyTorchConverter:
         Returns:
             int: The corresponding Chakra node type.
         """
-        logging.debug(f"{json_node.is_gpu_op()=}, {json_node.name=}, {json_node_map[json_node.parent]=}, {json_node_map[json_node.parent].name=}")
+        # logging.debug(f"{json_node.is_gpu_op()=}, {json_node.name=}, {json_node_map[json_node.parent]=}, {json_node_map[json_node.parent].name=}")
         if json_node.is_gpu_op():
             if "ncclDevKernel_SendRecv" in json_node.name:
                 parent_node = json_node_map[json_node.parent]
@@ -583,7 +584,8 @@ class PyTorchConverter:
             protobuf_node_map (Dict[int, ChakraNode]): The converted Chakra nodes.
         """
         logging.debug(f"Opening Chakra execution trace file: {output_filename}")
-        with open(output_filename, "wb") as protobuf_et:
+        with (gzip.open(output_filename, "wb") if output_filename.endswith(".gz") else open(output_filename, "wb")) as protobuf_et:
+        # with open(output_filename, "wb") as protobuf_et:
             logging.debug("Writing Chakra execution trace.")
             self.write_global_metadata(protobuf_et, json_metadata)
             self.encode_and_write_nodes(protobuf_et, protobuf_node_map)
