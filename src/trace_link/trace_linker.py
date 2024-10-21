@@ -1,16 +1,20 @@
 import bisect
 import copy
+import gzip
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
+import orjson
 from et_replay.execution_trace import (
     EXECUTION_TRACE_PROCESS_ANNOTATION,
     EXECUTION_TRACE_THREAD_ANNOTATION,
 )
 from et_replay.execution_trace import Node as PyTorchOperator
+from tqdm import tqdm
 
+from et_replay.utils import read_dictionary_from_json_file
 from .chakra_device_trace_loader import ChakraDeviceTraceLoader
 from .chakra_host_trace_loader import ChakraHostTraceLoader
 from .kineto_operator import KinetoOperator
@@ -648,13 +652,12 @@ class TraceLinker:
         Returns:
             Dict: The constructed ET+ data.
         """
-        logging.debug("Constructing ET+ data.")
-        with open(chakra_host_trace, "r") as file:
-            pytorch_et_data = json.load(file)
+        logging.info("Constructing ET+ data.")
+        pytorch_et_data = read_dictionary_from_json_file(chakra_host_trace)
 
         sorted_nodes = sorted(pytorch_et_data["nodes"], key=lambda x: x["id"])
         gpu_ops = []
-        for op in sorted_nodes:
+        for op in tqdm(sorted_nodes):
             gpu_ops += self.process_op_and_dependents(
                 op,
                 host_op_id_to_kineto_ops_map,
@@ -666,8 +669,9 @@ class TraceLinker:
         pytorch_et_data["nodes"] += gpu_ops
 
         # Update parent-child relationships with new IDs
+        logging.info("Updating parent-child relationships with new IDs.")
         sorted_nodes = sorted(pytorch_et_data["nodes"], key=lambda x: x["id"])
-        for op in sorted_nodes:
+        for op in tqdm(sorted_nodes):
             if "ctrl_deps" in op:
                 op["ctrl_deps"] = self.id_assigner.assign_or_retrieve_id(op["ctrl_deps"])
 
@@ -767,6 +771,16 @@ class TraceLinker:
 
         return updated_gpu_ops
 
+    @staticmethod
+    def write_dictionary_to_json_file(file_path: str, data: Dict[Any, Any]) -> None:
+        """Write input dictionary to a json file."""
+        if file_path.endswith("gz"):
+            with gzip.open(file_path, "w") as f:
+                f.write(orjson.dumps(data))
+        else:
+            with open(file_path, "w") as f:
+                f.write(orjson.dumps(data))
+
     def dump_chakra_execution_trace_plus(self, chakra_execution_trace_plus_data: Dict, output_file: str) -> None:
         """
         Dump the enhanced Chakra execution trace plus data to a file.
@@ -775,7 +789,7 @@ class TraceLinker:
             chakra_execution_trace_plus_data (Dict): The constructed ET+ data.
             output_file (str): The file path where the ET+ data will be saved.
         """
-        logging.debug(f"Starting to dump ET+ data to {output_file}.")
+        logging.info(f"Starting to dump ET+ data to {output_file}.")
 
         if chakra_execution_trace_plus_data is None:
             logging.error("ET+ data not constructed. Please run construct_et_plus_data first.")
@@ -786,6 +800,5 @@ class TraceLinker:
                 chakra_execution_trace_plus_data["nodes"], key=lambda x: x["id"]
             )
 
-        with open(output_file, "w") as file:
-            json.dump(chakra_execution_trace_plus_data, file, indent=4)
+        self.write_dictionary_to_json_file(output_file, chakra_execution_trace_plus_data)
         logging.debug(f"ET+ data dumped to {output_file}.")

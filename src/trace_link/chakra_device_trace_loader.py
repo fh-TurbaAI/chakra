@@ -1,11 +1,22 @@
+import gzip
 import logging
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
+import orjson
+from tqdm import tqdm
+from tqdm.contrib.concurrent import process_map
 
 from et_replay.utils import read_dictionary_from_json_file
 
 from .kineto_operator import KinetoOperator
+
+
+def read_dictionary_from_json_file(et_file_path: str) -> Dict[str, Any]:
+    """Loads Execution Trace from json file."""
+
+    with gzip.open(et_file_path, "rb") if et_file_path.endswith("gz") else open(et_file_path, "r") as f:
+        return orjson.loads(f.read())
+
 
 
 class ChakraDeviceTraceLoader:
@@ -36,7 +47,7 @@ class ChakraDeviceTraceLoader:
         Returns:
             Tuple containing various data structures needed for linking traces.
         """
-        logging.debug(f"Starting to load Chakra device trace from file: {chakra_device_trace}.")
+        logging.info(f"Starting to load Chakra device trace from file: {chakra_device_trace}.")
         chakra_trace_data = read_dictionary_from_json_file(chakra_device_trace)
         sorted_kineto_ops = sorted(
             [KinetoOperator(op) for op in chakra_trace_data["traceEvents"]],
@@ -84,7 +95,7 @@ class ChakraDeviceTraceLoader:
         Returns:
             Dict: Dictionary containing categorized operators and timing boundaries.
         """
-        logging.debug("Categorizing Kineto operators and calculating timing boundaries.")
+        logging.info("Categorizing Kineto operators and calculating timing boundaries.")
         process_start_time = sys.maxsize
         process_end_time = 0
         thread_info = {}
@@ -96,7 +107,7 @@ class ChakraDeviceTraceLoader:
         kineto_id_arrow_op_map = {}
         kineto_id_cuda_launch_op_map = {}
 
-        for op in kineto_ops:
+        for op in tqdm(kineto_ops):
             if op.is_cpu_op():
                 kineto_cpu_ops.append(op)
                 kineto_tid_cpu_ops_map.setdefault(op.tid, []).append(op)
@@ -145,7 +156,7 @@ class ChakraDeviceTraceLoader:
                 thread_start_end[1] = max(thread_start_end[1], op.timestamp + op.inclusive_dur)
 
         kineto_rf_id_to_kineto_op_map = {op.rf_id: op for op in kineto_cpu_ops if op.rf_id is not None}
-
+        logging.info("Categorization successful.")
         return {
             "kineto_cpu_ops": kineto_cpu_ops,
             "kineto_tid_cpu_ops_map": kineto_tid_cpu_ops_map,
