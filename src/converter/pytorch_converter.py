@@ -3,6 +3,8 @@ import json
 import logging
 from typing import IO, Dict, List, Optional, Set, Tuple
 
+import orjson
+
 from ...schema.protobuf.et_def_pb2 import (
     ALL_GATHER,
     ALL_REDUCE,
@@ -74,7 +76,7 @@ class PyTorchConverter:
         """
         logging.debug(f"Loading Chakra host + device execution traces in JSON format from file: {input_filename}")
         with (gzip.open(input_filename, "r") if input_filename.endswith(".gz") else open(input_filename, "r")) as json_file:
-            return json.load(json_file)
+            return orjson.loads(json_file.read())
 
     def parse_json_trace(self, json_trace: Dict) -> Tuple[Dict, Dict[int, PyTorchNode]]:
         """
