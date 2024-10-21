@@ -1,10 +1,12 @@
 import bisect
 import copy
+import gzip
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
+import orjson
 from et_replay.execution_trace import (
     EXECUTION_TRACE_PROCESS_ANNOTATION,
     EXECUTION_TRACE_THREAD_ANNOTATION,
@@ -12,7 +14,7 @@ from et_replay.execution_trace import (
 from et_replay.execution_trace import Node as PyTorchOperator
 from tqdm import tqdm
 
-from et_replay.utils import read_dictionary_from_json_file, write_dictionary_to_json_file
+from et_replay.utils import read_dictionary_from_json_file
 from .chakra_device_trace_loader import ChakraDeviceTraceLoader
 from .chakra_host_trace_loader import ChakraHostTraceLoader
 from .kineto_operator import KinetoOperator
@@ -769,6 +771,16 @@ class TraceLinker:
 
         return updated_gpu_ops
 
+    @staticmethod
+    def write_dictionary_to_json_file(file_path: str, data: Dict[Any, Any]) -> None:
+        """Write input dictionary to a json file."""
+        if file_path.endswith("gz"):
+            with gzip.open(file_path, "w") as f:
+                f.write(orjson.dumps(data))
+        else:
+            with open(file_path, "w") as f:
+                f.write(orjson.dumps(data))
+
     def dump_chakra_execution_trace_plus(self, chakra_execution_trace_plus_data: Dict, output_file: str) -> None:
         """
         Dump the enhanced Chakra execution trace plus data to a file.
@@ -788,5 +800,5 @@ class TraceLinker:
                 chakra_execution_trace_plus_data["nodes"], key=lambda x: x["id"]
             )
 
-        write_dictionary_to_json_file(output_file, chakra_execution_trace_plus_data)
+        self.write_dictionary_to_json_file(output_file, chakra_execution_trace_plus_data)
         logging.debug(f"ET+ data dumped to {output_file}.")
