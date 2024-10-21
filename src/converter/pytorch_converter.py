@@ -16,6 +16,7 @@ from ...schema.protobuf.et_def_pb2 import (
     COMP_NODE,
     REDUCE_SCATTER,
     GlobalMetadata,
+    GATHER,
 )
 from ...schema.protobuf.et_def_pb2 import AttributeProto as ChakraAttr
 from ...schema.protobuf.et_def_pb2 import Node as ChakraNode
@@ -368,6 +369,7 @@ class PyTorchConverter:
             "allgather": ALL_GATHER,
             "reducescatter": REDUCE_SCATTER,
             "broadcast": BROADCAST,
+            "sendrecv": GATHER,
             # Additional cases can be added here
         }
         normalized_name = name.replace("_", "").replace("-", "").lower()
