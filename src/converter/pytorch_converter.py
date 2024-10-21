@@ -13,7 +13,8 @@ from ...schema.protobuf.et_def_pb2 import (
     COMM_SEND_NODE,
     COMP_NODE,
     REDUCE_SCATTER,
-    GlobalMetadata, GATHER,
+    GlobalMetadata,
+    GATHER,
 )
 from ...schema.protobuf.et_def_pb2 import AttributeProto as ChakraAttr
 from ...schema.protobuf.et_def_pb2 import Node as ChakraNode
@@ -72,7 +73,7 @@ class PyTorchConverter:
             Dict: The loaded Chakra host + device execution trace data.
         """
         logging.debug(f"Loading Chakra host + device execution traces in JSON format from file: {input_filename}")
-        with open(input_filename, "r") as json_file:
+        with (gzip.open(input_filename, "r") if input_filename.endswith(".gz") else open(input_filename, "r")) as json_file:
             return json.load(json_file)
 
     def parse_json_trace(self, json_trace: Dict) -> Tuple[Dict, Dict[int, PyTorchNode]]:
@@ -584,8 +585,9 @@ class PyTorchConverter:
             protobuf_node_map (Dict[int, ChakraNode]): The converted Chakra nodes.
         """
         logging.debug(f"Opening Chakra execution trace file: {output_filename}")
-        with (gzip.open(output_filename, "wb") if output_filename.endswith(".gz") else open(output_filename, "wb")) as protobuf_et:
-        # with open(output_filename, "wb") as protobuf_et:
+        with (
+            gzip.open(output_filename, "wb") if output_filename.endswith(".gz") else open(output_filename, "wb")
+        ) as protobuf_et:
             logging.debug("Writing Chakra execution trace.")
             self.write_global_metadata(protobuf_et, json_metadata)
             self.encode_and_write_nodes(protobuf_et, protobuf_node_map)

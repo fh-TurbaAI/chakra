@@ -48,5 +48,6 @@ def main() -> None:
     logging.info(f"Linking process successful. Output file is available at {args.output_file}.")
     logging.info("Please run the chakra_converter for further postprocessing.")
 
+
 if __name__ == "__main__":
     main()

@@ -3,6 +3,19 @@ from typing import Any, Dict, Optional
 from et_replay.execution_trace import Node as PyTorchOperator
 
 
+from enum import Enum, auto
+
+
+class KinetoOperatorType(Enum):
+    CPU_OP = auto()
+    CUDA_RUNTIME_OP = auto()
+    CUDA_DRIVER_OP = auto()
+    AC2G_OP = auto()
+    KERNEL_LAUNCH_OP = auto()
+    GPU_OP = auto()
+    INTER_GPU_COMMS_OP = auto()
+
+
 class KinetoOperator:
     """
     Represents a single operator in a Kineto trace.
@@ -28,6 +41,21 @@ class KinetoOperator:
         pg_name (Optional[str]): Process Group name for the collective communication.
     """
 
+    simulatable_categories = {"cpu_op", "user_annotation"}
+    name_exceptions = {"ProfilerStep"}
+    cuda_launch_operations = {
+        "cuLaunchKernel",
+        "cuLaunchKernelEx",
+        "cudaLaunchKernel",
+        "cudaLaunchKernelExC",
+        "cudaMemcpy",
+        "cudaMemcpyAsync",
+        "cudaMemcpyFromSymbol",
+        "cudaMemcpyToSymbol",
+        "cudaLaunchCooperativeKernel",
+    }
+    gpu_categories = {"kernel", "gpu_memcpy"}
+
     def __init__(self, kineto_op: Dict[str, Any]) -> None:
         """
         Initialize a new instance of the KinetoOperator class.
@@ -40,9 +68,9 @@ class KinetoOperator:
         self.category: str = kineto_op.get("cat", "")
         self.name: str = kineto_op.get("name", "")
         self.phase: Optional[str] = kineto_op.get("ph")
-        self.inclusive_dur: int = kineto_op.get("dur", 0)
-        self.exclusive_dur: int = kineto_op.get("dur", 0)
-        self.timestamp: int = kineto_op.get("ts", 0)
+        self.inclusive_dur: float = kineto_op.get("dur", 0)
+        self.exclusive_dur: float = kineto_op.get("dur", 0)
+        self.timestamp: float = kineto_op.get("ts", 0)
         self.external_id: int = int(kineto_op.get("args", {}).get("External id", -1))
         self.ev_idx: int = int(kineto_op.get("args", {}).get("Ev Idx", -1))
         self.tid: int = kineto_op.get("tid", 0)
@@ -53,6 +81,35 @@ class KinetoOperator:
         self.rf_id: Optional[int] = kineto_op.get("args", {}).get("Record function id", None)
         self.correlation: int = kineto_op.get("args", {}).get("correlation", -1)
         self.pg_name: Optional[str] = kineto_op.get("args", {}).get("Process Group Name", None)
+
+        self.op_is_cpu_op = False  # self.category in self.simulatable_categories and all(exc not in self.name for exc in self.name_exceptions)
+        self.op_is_cuda_runtime_op = False  # self.category == "cuda_runtime"
+        self.op_is_cuda_driver_op = False  # self.category == "cuda_driver"
+        self.op_is_ac2g_op = False  # self.category == "ac2g"
+        self.op_is_kernel_launch_op = (
+            False  # (self.is_cuda_runtime_op or self.is_cuda_driver_op) and self.name in self.cuda_launch_operations
+        )
+        self.op_is_gpu_op = False  # self.category in self.gpu_categories
+        self.op_is_inter_gpu_comms_op = False  # "ncclDevKernel" in self.name
+        self.get_op_type()
+
+    def get_op_type(self):
+        if self.category == "cuda_runtime":
+            if self.name in self.cuda_launch_operations:
+                self.op_is_kernel_launch_op = True
+            self.op_is_cuda_runtime_op = True
+        elif self.category == "cuda_driver":
+            if self.name in self.cuda_launch_operations:
+                self.op_is_kernel_launch_op = True
+            self.op_is_cuda_driver_op = True
+        elif self.category == "ac2g":
+            self.op_is_ac2g_op = True
+        elif self.category in self.simulatable_categories and all(exc not in self.name for exc in self.name_exceptions):
+            self.op_is_cpu_op = True
+        if "ncclDevKernel" in self.name:
+            self.op_is_inter_gpu_comms_op = True
+        if self.category in self.gpu_categories:
+            self.op_is_gpu_op = True
 
     def __repr__(self) -> str:
         """
@@ -83,11 +140,10 @@ class KinetoOperator:
         Returns
             bool: True if the operator is simulatable, False otherwise.
         """
-        simulatable_categories = {"cpu_op", "user_annotation"}
-        name_exceptions = {"ProfilerStep"}
-        if self.category in simulatable_categories and all(exc not in self.name for exc in name_exceptions):
-            return True
-        return False
+        # if self.category in self.simulatable_categories and all(exc not in self.name for exc in self.name_exceptions):
+        #     return True
+        # return False
+        return self.op_is_cpu_op
 
     def is_cuda_runtime_op(self) -> bool:
         """
@@ -96,7 +152,8 @@ class KinetoOperator:
         Returns
             bool: True if it's a CUDA runtime operator, otherwise False.
         """
-        return self.category == "cuda_runtime"
+        # return self.category == "cuda_runtime"
+        return self.op_is_cuda_runtime_op
 
     def is_cuda_driver_op(self) -> bool:
         """
@@ -105,7 +162,8 @@ class KinetoOperator:
         Returns
             bool: True if it's a CUDA driver operator, otherwise False.
         """
-        return self.category == "cuda_driver"
+        # return self.category == "cuda_driver"
+        return self.op_is_cuda_driver_op
 
     def is_ac2g_op(self) -> bool:
         """
@@ -123,7 +181,8 @@ class KinetoOperator:
         Returns
             bool: True if the operator is an 'ac2g' type, otherwise False.
         """
-        return self.category == "ac2g"
+        # return self.category == "ac2g"
+        return self.op_is_ac2g_op
 
     def is_kernel_launch_op(self) -> bool:
         """
@@ -132,19 +191,10 @@ class KinetoOperator:
         Returns
             bool: True if it's a launch operation, otherwise False.
         """
-        cuda_launch_categories = self.is_cuda_runtime_op() or self.is_cuda_driver_op()
-        cuda_launch_operations = {
-            "cuLaunchKernel",
-            "cuLaunchKernelEx",
-            "cudaLaunchKernel",
-            "cudaLaunchKernelExC",
-            "cudaMemcpy",
-            "cudaMemcpyAsync",
-            "cudaMemcpyFromSymbol",
-            "cudaMemcpyToSymbol",
-            "cudaLaunchCooperativeKernel",
-        }
-        return cuda_launch_categories and self.name in cuda_launch_operations
+        # cuda_launch_categories = self.is_cuda_runtime_op() or self.is_cuda_driver_op()
+        #
+        # return cuda_launch_categories and self.name in self.cuda_launch_operations
+        return self.op_is_kernel_launch_op
 
     def is_gpu_op(self) -> bool:
         """
@@ -153,8 +203,9 @@ class KinetoOperator:
         Returns
             bool: True if it's a GPU-side operation, otherwise False.
         """
-        gpu_categories = {"kernel", "gpu_memcpy"}
-        return self.category in gpu_categories
+
+        # return self.category in self.gpu_categories
+        return self.op_is_gpu_op
 
     def is_inter_gpu_comms_op(self) -> bool:
         """
@@ -165,4 +216,5 @@ class KinetoOperator:
         Returns
             bool: True if it's a inter-GPU communication, otherwise False.
         """
-        return "ncclDevKernel" in self.name
+        # return "ncclDevKernel" in self.name
+        return self.op_is_inter_gpu_comms_op

@@ -47,6 +47,12 @@ exclude = [
     "src/third_party/utils/protolib.py",
 ]
 
+[tool.pytest.ini_options]
+addopts = [
+    "--benchmark-autosave",
+    "-m not benchmark"
+]
+
 
 [tool.ruff.lint]
 select = ["I", "B", "E", "D", "F", "SIM", "W", "C90", "EXE"]

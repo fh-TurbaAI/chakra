@@ -1,22 +1,32 @@
+import gzip
 import logging
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import partial
-from threading import Thread
-from typing import Dict, List, Tuple
-
-from et_replay.utils import read_dictionary_from_json_file
+from typing import Dict, List, Tuple, Any
+import orjson
 from tqdm import tqdm
-from tqdm.contrib.concurrent import thread_map, process_map
+from tqdm.contrib.concurrent import process_map
 
+try:
+    from rusty_chakra import RSKinetoOperator, DurationCalculator
+    HAS_RUST_EXTENSION = True
+except ImportError:
+    HAS_RUST_EXTENSION = False
 from .kineto_operator import KinetoOperator
+
+
+def read_dictionary_from_json_file(et_file_path: str) -> Dict[str, Any]:
+    """Loads Execution Trace from json file."""
+
+    with gzip.open(et_file_path, "rb") if et_file_path.endswith("gz") else open(et_file_path, "r") as f:
+        return orjson.loads(f.read())
+
 
 
 class ChakraDeviceTraceLoader:
     """Loads Chakra device traces."""
 
     def __init__(self):
-        self.sorted_kineto_ops = {}
+        self.sorted_kineto_ops: Dict[int, List[KinetoOperator]] = {}
 
     def load(
         self, chakra_device_trace: str
@@ -51,7 +61,11 @@ class ChakraDeviceTraceLoader:
         )
 
         dev_data = self.construct_dev_data_structures(sorted_kineto_ops, chakra_device_trace)
-        self.calculate_exclusive_dur(dev_data["kineto_tid_cpu_ops_map"])
+
+        if HAS_RUST_EXTENSION:
+            self.calculate_exclusive_dur_rs(dev_data["kineto_tid_cpu_ops_map"])
+        else:
+            self.calculate_exclusive_dur(dev_data["kineto_tid_cpu_ops_map"])
 
         dev_data["sorted_kineto_cpu_ops"] = sorted(dev_data["kineto_cpu_ops"], key=lambda op: op.timestamp)
         dev_data["sorted_kineto_cpu_op_ts"] = [op.timestamp for op in dev_data["sorted_kineto_cpu_ops"]]
@@ -152,7 +166,7 @@ class ChakraDeviceTraceLoader:
                 thread_start_end[1] = max(thread_start_end[1], op.timestamp + op.inclusive_dur)
 
         kineto_rf_id_to_kineto_op_map = {op.rf_id: op for op in kineto_cpu_ops if op.rf_id is not None}
-
+        logging.info("Categorization successful.")
         return {
             "kineto_cpu_ops": kineto_cpu_ops,
             "kineto_tid_cpu_ops_map": kineto_tid_cpu_ops_map,
@@ -168,19 +182,26 @@ class ChakraDeviceTraceLoader:
             "sorted_kineto_cpu_op_ts": [],
         }
 
-    def get_exclusive_dur_for_op(self, tid_op_index: tuple[int, int]) -> int:
+    def get_exclusive_dur_for_op(self, tid_op_index: tuple[int, int]) -> float:
+        """
+        Calculate the exclusive duration of one operator in the Kineto traces.
 
-        i = tid_op_index[1]
-        tid = tid_op_index[0]
+        The exclusive duration is defined as the total duration of the operator minus any time spent in child operators,
+        effectively representing the time spent exclusively in that operator.
+
+        Args:
+            tid_op_index (tuple[int, int]): A dict index and list index into self.sorted_kineto_ops to find the operation
+                to compute the exclusive duration for.
+        """
+        (tid, i) = tid_op_index
         op = self.sorted_kineto_ops[tid][i]
-        # logging.info(f"Op {i}: {op.name}")
         exclusive_dur = op.inclusive_dur
         overlapping_regions = []
 
         # Identify overlapping regions with child operators
-        for child_op in self.sorted_kineto_ops[tid][i + 1:]:
+        for child_op in self.sorted_kineto_ops[tid][i + 1 :]:
             if child_op.timestamp >= op.timestamp and (child_op.timestamp + child_op.inclusive_dur) <= (
-                    op.timestamp + op.inclusive_dur
+                op.timestamp + op.inclusive_dur
             ):
                 overlap_start = child_op.timestamp
                 overlap_end = child_op.timestamp + child_op.inclusive_dur
@@ -192,7 +213,6 @@ class ChakraDeviceTraceLoader:
         merged_regions = self.merge_overlapping_intervals(overlapping_regions)
         for start, end in merged_regions:
             exclusive_dur -= end - start
-
         # Check if exclusive_dur is not negative or zero
         if exclusive_dur < 0:
             error_msg = (
@@ -202,8 +222,39 @@ class ChakraDeviceTraceLoader:
             )
             logging.error(error_msg)
             raise ValueError(error_msg)
-
         return exclusive_dur
+
+    def calculate_exclusive_dur_rs(self, kineto_tid_cpu_ops_map: Dict[int, List[KinetoOperator]]) -> None:
+        """
+        Calculate the exclusive duration of each operator in the Kineto traces in parallel using the rust extension.
+
+        The exclusive duration is defined as the total duration of the operator minus any time spent in child operators,
+        effectively representing the time spent exclusively in that operator.
+
+        Args:
+            kineto_tid_cpu_ops_map (Dict[int, List[KinetoOperator]]): Map of thread IDs to their corresponding Kineto
+                operators.
+        """
+        calculator = DurationCalculator()
+        for tid, ops in kineto_tid_cpu_ops_map.items():
+            self.sorted_kineto_ops[tid] = sorted(ops, key=lambda op: (op.timestamp, op.inclusive_dur))
+            logging.info(f"Processing {len(ops)} operators in thread {tid} with rust extension.")
+            kineto_rs_operators = []
+            for op in self.sorted_kineto_ops[tid]:
+                kineto_rs_operators.append(
+                    RSKinetoOperator(
+                        id=op.id or -1,
+                        inclusive_dur=op.inclusive_dur,
+                        exclusive_dur=op.exclusive_dur,
+                        timestamp=op.timestamp,
+                        rf_id=op.rf_id if op.rf_id is not None else 0.0,
+                        name=op.name or "",
+                    )
+                )
+            exclusive_durs = calculator.calculate_exclusive_dur_rs(kineto_ops=kineto_rs_operators)
+            for kineto_op, excl_dur in zip(self.sorted_kineto_ops[tid], exclusive_durs):
+                kineto_op.exclusive_dur = excl_dur
+        logging.info("Exclusive durations for Kineto operators calculated successfully.")
 
     def calculate_exclusive_dur(self, kineto_tid_cpu_ops_map: Dict[int, List[KinetoOperator]]) -> None:
         """
@@ -218,58 +269,17 @@ class ChakraDeviceTraceLoader:
         """
         logging.info("Calculating exclusive durations for Kineto operators in parallel.")
 
-        for tid, ops in  kineto_tid_cpu_ops_map.items():
-            logging.info(f"Processing {len(ops)} operators in thread.")
+        for tid, ops in kineto_tid_cpu_ops_map.items():
             self.sorted_kineto_ops[tid] = sorted(ops, key=lambda op: (op.timestamp, op.inclusive_dur))
-
-            # fn = partial(self.get_exclusive_dur_for_op, sorted_ops)
-            exclusive_durs = process_map(self.get_exclusive_dur_for_op,
-                                         [(tid, i) for i in range(len(self.sorted_kineto_ops[tid]))], chunksize=max(len(self.sorted_kineto_ops[tid])//1000, 1), total=len(self.sorted_kineto_ops[tid]))
+            logging.info(f"Processing {len(ops)} operators in thread {tid}.")
+            exclusive_durs = process_map(
+                self.get_exclusive_dur_for_op,
+                ((tid, i) for i in range(len(self.sorted_kineto_ops[tid]))),
+                chunksize=max(1, len(self.sorted_kineto_ops[tid]) // 1000),
+                total=len(self.sorted_kineto_ops[tid]),
+            )
             for kineto_op, excl_dur in zip(self.sorted_kineto_ops[tid], exclusive_durs):
                 kineto_op.exclusive_dur = excl_dur
-            # for i, op in tqdm(enumerate(sorted_ops), total=len(sorted_ops)):
-            #     exclusive_dur = op.inclusive_dur
-            #     overlapping_regions = []
-            #
-            #     # Identify overlapping regions with child operators
-            #     for child_op in sorted_ops[i + 1 :]:
-            #         if child_op.timestamp >= op.timestamp and (child_op.timestamp + child_op.inclusive_dur) <= (
-            #             op.timestamp + op.inclusive_dur
-            #         ):
-            #             overlap_start = child_op.timestamp
-            #             overlap_end = child_op.timestamp + child_op.inclusive_dur
-            #             overlapping_regions.append((overlap_start, overlap_end))
-            #         if (op.timestamp + op.inclusive_dur) < child_op.timestamp:
-            #             break
-            #
-            #     # Merge overlapping regions and calculate exclusive duration
-            #     merged_regions = self.merge_overlapping_intervals(overlapping_regions)
-            #     for start, end in merged_regions:
-            #         exclusive_dur -= end - start
-            #
-            #     # Check if exclusive_dur is not negative or zero
-            #     if exclusive_dur < 0:
-            #         error_msg = (
-            #             f"Exclusive duration calculation error for node '{op.name}' "
-            #             f"(ts: {op.timestamp}, inclusive_dur: {op.inclusive_dur}, rf_id: {op.rf_id}): "
-            #             f"Duration cannot be less than zero."
-            #         )
-            #         logging.error(error_msg)
-            #         raise ValueError(error_msg)
-            #
-            #     op.exclusive_dur = exclusive_dur
-            #     logging.debug(
-            #         f"Node '{op.name}' (ts: {op.timestamp}, inclusive_dur: {op.inclusive_dur}, "
-            #         f"rf_id: {op.rf_id}) exclusive duration: {op.exclusive_dur} microseconds."
-            #     )
-        # for thread_ops in kineto_tid_cpu_ops_map.values():
-        #     process_ops_for_thread(thread_ops)
-        # with ThreadPoolExecutor() as executor:
-        #     futures = [executor.submit(process_ops_for_thread, ops) for ops in kineto_tid_cpu_ops_map.values()]
-        #
-        #     for future in as_completed(futures):
-        #         future.result()  # Wait for all threads to complete and handle any exceptions
-
         logging.info("Exclusive durations for Kineto operators calculated successfully.")
 
     @staticmethod

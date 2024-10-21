@@ -650,10 +650,8 @@ class TraceLinker:
         Returns:
             Dict: The constructed ET+ data.
         """
-        logging.debug("Constructing ET+ data.")
+        logging.info("Constructing ET+ data.")
         pytorch_et_data = read_dictionary_from_json_file(chakra_host_trace)
-        # with open(chakra_host_trace, "r") as file:
-        #     pytorch_et_data = read_dictionary_from_json_file(et_file_path)
 
         sorted_nodes = sorted(pytorch_et_data["nodes"], key=lambda x: x["id"])
         gpu_ops = []
@@ -669,6 +667,7 @@ class TraceLinker:
         pytorch_et_data["nodes"] += gpu_ops
 
         # Update parent-child relationships with new IDs
+        logging.info("Updating parent-child relationships with new IDs.")
         sorted_nodes = sorted(pytorch_et_data["nodes"], key=lambda x: x["id"])
         for op in tqdm(sorted_nodes):
             if "ctrl_deps" in op:
@@ -778,7 +777,7 @@ class TraceLinker:
             chakra_execution_trace_plus_data (Dict): The constructed ET+ data.
             output_file (str): The file path where the ET+ data will be saved.
         """
-        logging.debug(f"Starting to dump ET+ data to {output_file}.")
+        logging.info(f"Starting to dump ET+ data to {output_file}.")
 
         if chakra_execution_trace_plus_data is None:
             logging.error("ET+ data not constructed. Please run construct_et_plus_data first.")
