@@ -1,6 +1,9 @@
 import argparse
+import gzip
 
-from google.protobuf.json_format import MessageToJson
+import orjson
+from google.protobuf.json_format import MessageToDict
+from tqdm import tqdm
 
 from ...schema.protobuf.et_def_pb2 import (
     GlobalMetadata,
@@ -24,12 +27,22 @@ def main() -> None:
 
     execution_trace = open_file_rd(args.input_filename)
     node = ChakraNode()
-    with open(args.output_filename, "w") as file:
-        global_metadata = GlobalMetadata()
-        decode_message(execution_trace, global_metadata)
-        file.write(MessageToJson(global_metadata))
-        while decode_message(execution_trace, node):
-            file.write(MessageToJson(node))
+    trace_objects: list = []
+    global_metadata = GlobalMetadata()
+    decode_message(execution_trace, global_metadata)
+    trace_objects.append(MessageToDict(global_metadata))
+    progress_bar = tqdm(desc="Loading chakra nodes", unit="node")
+    while decode_message(execution_trace, node):
+        trace_objects.append(MessageToDict(node))
+        progress_bar.update(1)
+    progress_bar.close()
+    with (
+        gzip.open(args.output_filename, "wb")
+        if args.output_filename.endswith(".gz")
+        else open(args.output_filename, "wb") as file
+    ):
+        file.write(orjson.dumps(trace_objects, option=orjson.OPT_INDENT_2))
+
     execution_trace.close()
 
 
